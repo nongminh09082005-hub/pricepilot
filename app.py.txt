@@ -1,0 +1,189 @@
+import streamlit as st
+import numpy as np
+import plotly.express as px
+import pandas as pd
+
+st.set_page_config(page_title="SME Pricing Simulation Tool", layout="wide")
+
+# =========================
+# STYLE
+# =========================
+st.markdown("""
+<style>
+.big-title {font-size:32px; font-weight:bold; margin-bottom:0;}
+.card {padding:20px; border-radius:12px; background-color:#f5f7fa; margin-bottom:10px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<p class="big-title">🔧 SME Pricing Simulation Tool</p>', unsafe_allow_html=True)
+st.caption("Công cụ mô phỏng tăng giá sử dụng Monte Carlo - Phiên bản Minimum Viable")
+
+# =========================
+# SIDEBAR INPUT
+# =========================
+with st.sidebar:
+    st.header("⚙️ Input")
+    
+    st.subheader("Nguyên vật liệu")
+    material = st.selectbox("Vật liệu", ["Thép (15.5M/tấn)", "Inox (58M/tấn)", "Nhôm (65M/tấn)", "Đồng (240M/tấn)"])
+    material_price = {"Thép (15.5M/tấn)": 15500000, "Inox (58M/tấn)": 58000000, 
+                     "Nhôm (65M/tấn)": 65000000, "Đồng (240M/tấn)": 240000000}
+    
+    tons = st.number_input("Sản lượng hiện tại (tấn/tháng)", value=120)
+    
+    st.subheader("Chi phí")
+    workers = st.number_input("Số công nhân", value=25)
+    salary = st.number_input("Lương trung bình/tháng", value=9000000)
+    electricity = st.number_input("Điện + mặt bằng/tháng", value=320000000)
+    maintenance_year = st.number_input("Bảo trì/năm", value=250000000)
+    machine_value = st.number_input("Giá trị máy móc", value=3000000000)
+    machine_life = st.number_input("Tuổi thọ máy (năm)", value=10)
+
+    st.subheader("Kinh doanh")
+    current_margin = st.slider("Margin hiện tại (%)", 0, 40, 18)
+    win_rate = st.slider("Win rate hiện tại (%)", 0, 100, 35)
+    orders = st.number_input("Số đơn hàng/tháng", value=40)
+
+    st.subheader("📊 Thông tin Thị trường (Range)")
+    industry_growth = st.slider("Tăng trưởng ngành (%)", 0.0, 15.0, (3.0, 8.0))
+    inflation = st.slider("Lạm phát (%)", 0.0, 12.0, (2.0, 6.0))
+    income_growth = st.slider("Tăng trưởng thu nhập dân cư (%)", 0.0, 10.0, (2.0, 5.0))
+    elasticity = st.slider("Độ nhạy giá (Elasticity)", 0.5, 3.0, (1.0, 1.8))
+
+    price_increases = [0, 5, 10, 15, 20]
+    st.info("Sẽ chạy mô phỏng cho các mức tăng giá: " + str(price_increases) + "%")
+
+    run = st.button("🚀 Chạy Monte Carlo Simulation", type="primary")
+# =========================
+# MAIN CALCULATION
+# =========================
+if run:
+    # Tính baseline
+    mat_cost = material_price[material] * tons
+    labor_cost = workers * salary
+    maintenance_month = maintenance_year / 12
+    depreciation = machine_value / (machine_life * 12)
+    fixed_cost = electricity + maintenance_month + depreciation
+    total_cost = mat_cost + labor_cost + fixed_cost
+    real_orders = orders * (win_rate / 100)
+    baseline_cost_per_order = total_cost / max(real_orders, 1)
+    baseline_price = baseline_cost_per_order / (1 - current_margin / 100)
+    baseline_profit = (baseline_price - baseline_cost_per_order) * real_orders
+
+    # =========================
+    # MONTE CARLO SIMULATION
+    # =========================
+    n_sim = 1000
+    results = []
+
+    for price_inc in price_increases:
+        profits = []
+        volumes = []
+        
+        for _ in range(n_sim):
+            # Random các yếu tố thị trường
+            ind_g = np.random.uniform(industry_growth[0], industry_growth[1]) / 100
+            inf = np.random.uniform(inflation[0], inflation[1]) / 100
+            inc_g = np.random.uniform(income_growth[0], income_growth[1]) / 100
+            elast = np.random.uniform(elasticity[0], elasticity[1])
+            
+            # Phản ứng khách hàng
+            demand_change = ind_g + inc_g - elast * (price_inc / 100)
+            new_quantity = real_orders * (1 + demand_change)
+            
+            # Cost mới
+            new_cost_per_order = baseline_cost_per_order * (1 + inf)
+            
+            # Giá mới
+            new_price = baseline_price * (1 + price_inc / 100)
+            
+            # Profit
+            new_profit = (new_price - new_cost_per_order) * max(new_quantity, 0)
+            
+            profits.append(new_profit)
+            volumes.append(new_quantity)
+        
+        # Thống kê
+        avg_profit = np.mean(profits)
+        std_profit = np.std(profits)
+        prob_loss = np.mean(np.array(profits) < baseline_profit) * 100
+        prob_volume_drop = np.mean(np.array(volumes) < real_orders * 0.9) * 100  # mất >10% volume
+        
+        results.append({
+            "Price Increase (%)": price_inc,
+            "Expected Profit": avg_profit,
+            "Profit Std": std_profit,
+            "Profit Change (%)": (avg_profit - baseline_profit) / baseline_profit * 100,
+            "Prob Loss (%)": prob_loss,
+            "Prob Volume Drop >10%": prob_volume_drop,
+            "Avg Volume": np.mean(volumes)
+        })
+
+    df = pd.DataFrame(results)
+
+    # =========================
+    # KẾT QUẢ CHÍNH
+    # =========================
+    st.success("✅ Đã chạy xong 5,000 simulations!")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Baseline Profit", f"{baseline_profit:,.0f} VNĐ")
+    best_row = df.loc[df["Expected Profit"].idxmax()]
+    col2.metric("Optimal Expected Profit", f"{best_row['Expected Profit']:,.0f} VNĐ", 
+                f"+{best_row['Profit Change (%)']:.1f}%")
+    col3.metric("Xác suất lỗ cao nhất", f"{df['Prob Loss (%)'].max():.1f}%")
+    col4.metric("Mức tăng giá khuyến nghị", f"{best_row['Price Increase (%)']}%")
+
+    # Bảng so sánh
+    st.subheader("📋 So sánh các mức tăng giá")
+    display_df = df.round(1)
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # Biểu đồ
+    fig = px.bar(df, x="Price Increase (%)", y="Expected Profit",
+                 title="Expected Profit theo mức tăng giá",
+                 labels={"Expected Profit": "Lợi nhuận kỳ vọng (VNĐ)"},
+                 text_auto=True)
+    st.plotly_chart(fig, use_container_width=True)
+
+    fig2 = px.line(df, x="Price Increase (%)", y="Prob Loss (%)",
+                   title="Rủi ro lỗ theo mức tăng giá", markers=True)
+    st.plotly_chart(fig2, use_container_width=True)
+
+    # =========================
+    # RECOMMENDATION 3 KIỂU
+    # =========================
+    st.subheader("🎯 Khuyến nghị Chiến lược")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        st.markdown("**Aggressive** (Tối đa lợi nhuận)")
+        agg = df.loc[df["Expected Profit"].idxmax()]
+        st.success(f"Tăng **{agg['Price Increase (%)']}%**\n\n"
+                   f"Profit kỳ vọng: **{agg['Expected Profit']:,.0f}**")
+
+    with col_b:
+        st.markdown("**Balanced** (Cân bằng)")
+        balanced = df[(df["Prob Loss (%)"] < 30) & (df["Expected Profit"] > baseline_profit * 1.05)]
+        if not balanced.empty:
+            bal = balanced.loc[balanced["Expected Profit"].idxmax()]
+            st.info(f"Tăng **{bal['Price Increase (%)']}%**\n\n"
+                    f"Profit: **{bal['Expected Profit']:,.0f}**\n"
+                    f"Xác suất lỗ: **{bal['Prob Loss (%)']:.1f}%**")
+        else:
+            st.warning("Không tìm thấy kịch bản cân bằng")
+
+    with col_c:
+        st.markdown("**Conservative** (An toàn)")
+        cons = df.loc[df["Prob Loss (%)"].idxmin()]
+        st.success(f"Tăng **{cons['Price Increase (%)']}%**\n\n"
+                   f"Xác suất lỗ: **{cons['Prob Loss (%)']:.1f}%**")
+
+    # Insight
+    st.subheader("💡 Insight chính")
+    st.info(f"""
+    - Tăng giá càng cao → lợi nhuận kỳ vọng ban đầu tăng nhưng rủi ro cũng tăng mạnh.
+    - Độ nhạy giá (Elasticity) là yếu tố quan trọng nhất ảnh hưởng đến sản lượng.
+    - Hiện tại, mức **{best_row['Price Increase (%)']}%** cho lợi nhuận kỳ vọng cao nhất.
+    """)
